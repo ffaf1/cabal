@@ -140,7 +140,7 @@ instance NFData ForeignLib where rnf = genericRnf
 
 instance Semigroup ForeignLib where
   a <> b = ForeignLib {
-      foreignLibName         = combine'  foreignLibName
+      foreignLibName         = combineName a b foreignLibName "foreign library"
     , foreignLibType         = combine   foreignLibType
     , foreignLibOptions      = combine   foreignLibOptions
     , foreignLibBuildInfo    = combine   foreignLibBuildInfo
@@ -149,12 +149,6 @@ instance Semigroup ForeignLib where
     , foreignLibModDefFile   = combine   foreignLibModDefFile
     }
     where combine field = field a `mappend` field b
-          combine' field = case ( unUnqualComponentName $ field a
-                                , unUnqualComponentName $ field b) of
-            ("", _) -> field b
-            (_, "") -> field a
-            (x, y) -> error $ "Ambiguous values for executable field: '"
-                                  ++ x ++ "' and '" ++ y ++ "'"
           combine'' field = field b
 
 instance Monoid ForeignLib where

@@ -3,12 +3,12 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Distribution.Types.UnqualComponentName
   ( UnqualComponentName, unUnqualComponentName, unUnqualComponentNameST, mkUnqualComponentName
-  , packageNameToUnqualComponentName, unqualComponentNameToPackageName
+  , packageNameToUnqualComponentName, unqualComponentNameToPackageName, combineName
   ) where
 
 import Distribution.Compat.Prelude
 import Distribution.Utils.ShortText
-import Prelude ()
+import Prelude as P (null)
 
 import Distribution.Parsec
 import Distribution.Pretty
@@ -91,3 +91,21 @@ packageNameToUnqualComponentName = UnqualComponentName . unPackageNameST
 -- @since 2.0.0.2
 unqualComponentNameToPackageName :: UnqualComponentName -> PackageName
 unqualComponentNameToPackageName = mkPackageNameST . unUnqualComponentNameST
+
+-- | Combine names in targets (partial function). Useful in 'Semigroup'
+-- and similar instances.
+combineName :: a -> a -> (a -> UnqualComponentName) -> String ->
+               UnqualComponentName
+combineName a b tacc tt
+            -- One empty or the same.
+        | P.null unb ||
+          una == unb    = na
+        | P.null una = nb
+            -- Both non-empty, different.
+        | otherwise = error $ "Ambiguous values for " ++ tt ++ " field: '"
+                        ++ una ++ "' and '" ++ unb ++ "'"
+    where
+          (na, nb) = (tacc a, tacc b)
+          una = unUnqualComponentName na
+          unb = unUnqualComponentName nb
+
