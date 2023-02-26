@@ -34,6 +34,7 @@ module Distribution.PackageDescription.Check (
 
         -- ** Checking package contents
         checkPackageFiles,
+        checkPackageFilesGPD,
         checkPackageContent,
         CheckPackageContentOps(..)
   ) where
@@ -49,7 +50,7 @@ import Distribution.License
 import Distribution.ModuleName                       (ModuleName)
 import Distribution.Package
 import Distribution.PackageDescription
-import Distribution.PackageDescription.Check.Prim
+import Distribution.PackageDescription.Check.Types
 import Distribution.Parsec.Warning                   (PWarning)
 import Distribution.Pretty                           (prettyShow)
 import Distribution.Simple.BuildPaths                (autogenPathsModuleName, autogenPackageInfoModuleName)
@@ -89,9 +90,9 @@ import Control.Monad
 -- ☞ N.B.
 --
 -- Part of the tools/scaffold used to perform check is found in
--- Distribution.PackageDescription.Check.Prim. Summary of that module (for
+-- Distribution.PackageDescription.Check.Types. Summary of that module (for
 -- how we use it here):
--- 1. we work inside a 'Check m a' monad (where `m` is an abstraction to
+-- 1. we work inside a 'CheckM m a' monad (where `m` is an abstraction to
 --    run non-pure checks);
 -- 2. 'checkP', 'checkPre' functions perform checks (respectively pure and
 --    non-pure);
@@ -154,14 +155,13 @@ checkPackageContent pops gpd = checkPackagePrim False (Just pops) Nothing gpd
 -- | Sanity checks that require IO. 'checkPackageFiles' looks at the files
 -- in the package and expects to find the package unpacked at the given
 -- filepath.
---
-checkPackageFiles :: Verbosity ->           -- Glob warn message verbosity.
-                     PackageDescription ->
-                     FilePath ->            -- Package root.
-                     IO [PackageCheck]
-checkPackageFiles verbosity gpd root =
-        checkPackagePrim False (Just checkFilesIO) (Just checkPreIO)
-                         (pd2gpd gpd)
+checkPackageFilesGPD ::
+        Verbosity ->                  -- Glob warn message verbosity.
+        GenericPackageDescription ->
+        FilePath ->                   -- Package root.
+        IO [PackageCheck]
+checkPackageFilesGPD verbosity gpd root =
+        checkPackagePrim False (Just checkFilesIO) (Just checkPreIO) gpd
   where
     checkFilesIO = CheckPackageContentOps {
       doesFileExist        = System.doesFileExist                  . relative,
@@ -177,6 +177,17 @@ checkPackageFiles verbosity gpd root =
 
     relative path = root </> path
 
+-- | Same as  'checkPackageFilesGPD', but working with 'PackageDescription'.
+--
+-- This function is included for legacy reasons, use 'checkPackageFilesGPD'
+-- if you are working with 'GenericPackageDescription'.
+checkPackageFiles ::
+        Verbosity ->           -- Glob warn message verbosity.
+        PackageDescription ->
+        FilePath ->            -- Package root.
+        IO [PackageCheck]
+checkPackageFiles verbosity pd oot =
+        checkPackageFilesGPD verbosity (pd2gpd pd) oot
 
 -- ------------------------------------------------------------
 -- * Package description

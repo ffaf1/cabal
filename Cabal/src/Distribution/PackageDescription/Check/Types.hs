@@ -4,7 +4,7 @@
 
 -----------------------------------------------------------------------------
 -- |
--- Module      :  Distribution.PackageDescription.Check.Monad
+-- Module      :  Distribution.PackageDescription.Check.Types
 -- Copyright   :  Francesco Ariis 2022
 -- License     :  BSD3
 --
@@ -15,7 +15,7 @@
 -- Having these primitives in a different module allows us to appropriately
 -- limit/manage the interface to suit checking needs.
 
-module Distribution.PackageDescription.Check.Prim
+module Distribution.PackageDescription.Check.Types
                 ( -- * Types and constructors
                   CheckM(..),
                   execCheckM,
@@ -128,31 +128,31 @@ data CheckPreDistributionOps m = CheckPreDistributionOps {
 
 -- | Context to perform checks (will be the Reader part in your monad).
 --
-data CheckCtx m = CheckCtx { ccInterface :: CheckInterface m,
-                               -- Interface for checks.
+data CheckCtx m = CheckCtx {
+        ccInterface :: CheckInterface m,
+          -- Interface for checks.
 
-                             -- Contextual infos for checks.
-                             ccFlag :: Bool,
-                               -- Are we under a user flag?
+        -- Contextual infos for checks.
+        ccFlag :: Bool,
+          -- Are we under a user flag?
 
-                             -- Convenience bits that we prefer to carry
-                             -- in our Reader monad instead of passing it
-                             -- via ->, as they are often useful and often
-                             -- in deeply nested places in the GPD tree.
-                             ccSpecVersion :: CabalSpecVersion,
-                                -- Cabal version.
-                             ccDesugar :: LegacyExeDependency ->
-                                          Maybe ExeDependency,
-                                -- A desugaring function from
-                                -- Distribution.Simple.BuildToolDepends
-                                -- (desugarBuildToolSimple). Again since it
-                                -- eats PackageName and a list of executable
-                                -- names, it is more convenient to pass it
-                                -- via Reader.
-                             ccNames :: PNames
-                                -- Various names (id, libs, execs, tests,
-                                -- benchs), convenience.
-                        }
+        -- Convenience bits that we prefer to carry
+        -- in our Reader monad instead of passing it
+        -- via ->, as they are often useful and often
+        -- in deeply nested places in the GPD tree.
+        ccSpecVersion :: CabalSpecVersion,
+          -- Cabal version.
+        ccDesugar :: LegacyExeDependency -> Maybe ExeDependency,
+          -- A desugaring function from
+          -- Distribution.Simple.BuildToolDepends
+          -- (desugarBuildToolSimple). Again since it
+          -- eats PackageName and a list of executable
+          -- names, it is more convenient to pass it
+          -- via Reader.
+        ccNames :: PNames
+          -- Various names (id, libs, execs, tests,
+          -- benchs), convenience.
+    }
 
 -- | Creates a pristing 'CheckCtx'. With pristine we mean everything that
 -- can be deduced by GPD but *not* user flags information.
@@ -176,23 +176,24 @@ initCheckCtx t c = c {ccFlag = taPackageFlag t}
 -- executable, etc. — is a monoid) whether we are under an off-by-default
 -- package flag.
 --
-data TargetAnnotation a = TargetAnnotation
-                    { taTarget :: a,
-                        -- The target we are building (lib, exe, etc.)
-                      taPackageFlag :: Bool
-                        -- Whether we are under an off-by-default package
-                        -- flag.
-                }
-    deriving (Show, Eq, Ord)
+data TargetAnnotation a = TargetAnnotation {
+        taTarget :: a,
+          -- The target we are building (lib, exe, etc.)
+        taPackageFlag :: Bool
+          -- Whether we are under an off-by-default package flag.
+    }
+  deriving (Show, Eq, Ord)
 
 -- | A collection os names, shipping tuples around is annoying.
 --
-data PNames = PNames { pnPackageId :: PackageIdentifier, -- Package ID…
-                       -- … and a bunch of lib, exe, test, bench names.
-                       pnSubLibs :: [UnqualComponentName],
-                       pnExecs :: [UnqualComponentName],
-                       pnTests :: [UnqualComponentName],
-                       pnBenchs :: [UnqualComponentName] }
+data PNames = PNames {
+        pnPackageId :: PackageIdentifier, -- Package ID…
+        -- … and a bunch of lib, exe, test, bench names.
+        pnSubLibs :: [UnqualComponentName],
+        pnExecs :: [UnqualComponentName],
+        pnTests :: [UnqualComponentName],
+        pnBenchs :: [UnqualComponentName]
+    }
 
 -- | Init names from a GPD.
 initPNames :: GenericPackageDescription -> PNames

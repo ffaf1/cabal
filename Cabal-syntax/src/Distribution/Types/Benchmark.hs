@@ -47,7 +47,7 @@ instance Monoid Benchmark where
 
 instance Semigroup Benchmark where
     a <> b = Benchmark {
-        benchmarkName      = combineName a b benchmarkName "benchmark",
+        benchmarkName      = combineNames a b benchmarkName "benchmark",
         benchmarkInterface = combine  benchmarkInterface,
         benchmarkBuildInfo = combine  benchmarkBuildInfo
     }

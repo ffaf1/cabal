@@ -50,7 +50,7 @@ instance Monoid TestSuite where
 
 instance Semigroup TestSuite where
     a <> b = TestSuite {
-        testName      = combineName a b testName "test",
+        testName      = combineNames a b testName "test",
         testInterface = combine  testInterface,
         testBuildInfo = combine  testBuildInfo,
         testCodeGenerators = combine testCodeGenerators
