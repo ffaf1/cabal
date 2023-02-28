@@ -44,6 +44,7 @@ import Prelude ()
 
 import Data.List as L                                (group)
 import Distribution.CabalSpecVersion
+import Distribution.Compat.NonEmptySet               (toNonEmpty)
 import Distribution.Compat.Lens
 import Distribution.Compiler
 import Distribution.License
@@ -249,14 +250,22 @@ checkGenericPackageDescription
           (PackageDistInexcusable CVTestSuite)
 
         -- § Conditional targets
+
+        -- Extract dependencies from libraries, to be passed along for
+        -- PVP checks purposes.
+        pName <- asksCM (packageNameToUnqualComponentName . pkgName .
+                         pnPackageId . ccNames)
+        let ads = maybe [] ((:[]) . extractAssocDeps pName) condLibrary_ ++
+                  map (uncurry extractAssocDeps) condSubLibraries_
+
         case condLibrary_ of
           Just cl -> checkCondTarget
                         genPackageFlags_
-                        (checkLibrary False)
+                        (checkLibrary False ads)
                         (const id) (mempty, cl)
           Nothing -> return ()
         mapM_ (checkCondTarget genPackageFlags_
-                  (checkLibrary False)
+                  (checkLibrary False ads)
                   (\u l -> l {libName = maybeToLibraryName (Just u)}))
               condSubLibraries_
         mapM_ (checkCondTarget genPackageFlags_
@@ -264,15 +273,15 @@ checkGenericPackageDescription
                   (const id))
               condForeignLibs_
         mapM_ (checkCondTarget genPackageFlags_
-                  (checkExecutable (package packageDescription_))
+                  (checkExecutable (package packageDescription_) ads)
                   (const id))
               condExecutables_
         mapM_ (checkCondTarget genPackageFlags_
-                  checkTestSuite
+                  (checkTestSuite ads)
                   (\u l -> l {testName = u}))
               condTestSuites_
         mapM_ (checkCondTarget genPackageFlags_
-                  checkBenchmark
+                  (checkBenchmark ads)
                   (\u l -> l {benchmarkName = u}))
               condBenchmarks_
 
@@ -427,10 +436,12 @@ checkPackageDescription
 checkSetupBuildInfo :: Monad m => Maybe SetupBuildInfo -> CheckM m ()
 checkSetupBuildInfo Nothing = return ()
 checkSetupBuildInfo (Just (SetupBuildInfo ds _)) = do
-        (is, rs) <- partitionDeps ["base", "Cabal"] ds
+        let uqs = map mkUnqualComponentName ["base", "Cabal"]
+        (is, rs) <- partitionDeps [] uqs ds
         let ick = PackageDistInexcusable . UpperBoundSetup
-            rck = PackageDistSuspiciousWarn . MissingUpperBounds
-        mapM_ (checkPVP ick) is
+            rck = PackageDistSuspiciousWarn .
+                    MissingUpperBounds CETSetup
+        checkPVP ick is
         checkPVPs rck rs
 
 checkPackageId :: Monad m => PackageIdentifier -> CheckM m ()
@@ -679,13 +690,14 @@ checkCondVars cond =
 -- ------------------------------------------------------------
 
 checkLibrary :: Monad m =>
-                Bool ->     -- Is this a sublibrary?
+                Bool ->         -- Is this a sublibrary?
+                [AssocDep] ->   -- “Inherited” dependencies for PVP checks.
                 Library ->
                 CheckM m ()
-checkLibrary isSub lib@(Library
-                          libName_ _exposedModules_ reexportedModules_
-                          signatures_ _libExposed_ _libVisibility_
-                          libBuildInfo_) = do
+checkLibrary isSub ads lib@(Library
+                             libName_ _exposedModules_ reexportedModules_
+                             signatures_ _libExposed_ _libVisibility_
+                             libBuildInfo_) = do
         checkP (libName_ == LMainLibName && isSub)
           (PackageBuildImpossible UnnamedInternal)
         -- TODO: bogus if a required-signature was passed through.
@@ -705,7 +717,10 @@ checkLibrary isSub lib@(Library
           (PackageBuildImpossible AutogenIncludesNotIncluded)
 
         -- § Build infos.
-        checkBuildInfo BITLib (explicitLibModules lib) libBuildInfo_
+        checkBuildInfo (CETLibrary libName_)
+                       (explicitLibModules lib)
+                       ads
+                       libBuildInfo_
 
         -- Feature checks.
         -- check use of reexported-modules sections
@@ -718,14 +733,27 @@ checkLibrary isSub lib@(Library
 
 checkForeignLib :: Monad m => ForeignLib -> CheckM m ()
 checkForeignLib (ForeignLib
-                   _foreignLibName_ _foreignLibType_ _foreignLibOptions_
+                   foreignLibName_ _foreignLibType_ _foreignLibOptions_
                    foreignLibBuildInfo_ _foreignLibVersionInfo_
                    _foreignLibVersionLinux_ _foreignLibModDefFile_) = do
-        checkBuildInfo BITLib [] foreignLibBuildInfo_
 
-checkExecutable :: Monad m => PackageId -> Executable -> CheckM m ()
-checkExecutable pid exe@(Executable
-                           exeName_ modulePath_ _exeScope_ buildInfo_) = do
+        checkBuildInfo (CETForeignLibrary foreignLibName_)
+                       []
+                       []
+                       foreignLibBuildInfo_
+
+checkExecutable :: Monad m =>
+            PackageId ->
+            [AssocDep] ->   -- “Inherited” dependencies for PVP checks.
+            Executable ->
+            CheckM m ()
+checkExecutable pid ads exe@(Executable
+                              exeName_ modulePath_
+                              _exeScope_ buildInfo_) = do
+
+        -- Target type/name (exe).
+        let cet = CETExecutable exeName_
+
         -- § Exe specific checks
         checkP (null modulePath_)
           (PackageBuildImpossible (NoMainIs exeName_))
@@ -744,18 +772,25 @@ checkExecutable pid exe@(Executable
         -- Alas exeModules ad exeModulesAutogen (exported from
         -- Distribution.Types.Executable) take `Executable` as a parameter.
         checkP (not $ all (flip elem (exeModules exe)) (exeModulesAutogen exe))
-          (PackageBuildImpossible $ AutogenNoOther CETExecutable exeName_)
+          (PackageBuildImpossible $ AutogenNoOther cet)
         checkP (not $ all (flip elem (view L.includes exe))
                                     (view L.autogenIncludes exe))
           (PackageBuildImpossible AutogenIncludesNotIncludedExe)
 
         -- § Build info checks.
-        checkBuildInfo BITOther [] buildInfo_
+        checkBuildInfo cet [] ads buildInfo_
 
-checkTestSuite :: Monad m => TestSuite -> CheckM m ()
-checkTestSuite ts@(TestSuite
-                     testName_ testInterface_ testBuildInfo_
-                     _testCodeGenerators_) = do
+checkTestSuite :: Monad m =>
+        [AssocDep] ->   -- “Inherited” dependencies for PVP checks.
+        TestSuite ->
+        CheckM m ()
+checkTestSuite ads ts@(TestSuite
+                        testName_ testInterface_ testBuildInfo_
+                        _testCodeGenerators_) = do
+
+        -- Target type/name (test).
+        let cet = CETTest testName_
+
         -- § TS specific checks.
         -- TODO caught by the parser, can remove safely
         case testInterface_ of
@@ -768,7 +803,7 @@ checkTestSuite ts@(TestSuite
           (PackageBuildImpossible NoHsLhsMain)
         checkP (not $ all (flip elem (testModules ts))
                          (testModulesAutogen ts))
-          (PackageBuildImpossible (AutogenNoOther CETTest $ testName_))
+          (PackageBuildImpossible $ AutogenNoOther cet)
         checkP (not $ all (flip elem (view L.includes ts))
                          (view L.autogenIncludes ts))
           (PackageBuildImpossible AutogenIncludesNotIncludedExe)
@@ -779,7 +814,7 @@ checkTestSuite ts@(TestSuite
           (PackageDistInexcusable MainCCabal1_18)
 
         -- § Build info checks.
-        checkBuildInfo BITTestBench [] testBuildInfo_
+        checkBuildInfo cet [] ads testBuildInfo_
   where
         mainIsWrongExt =
           case testInterface_ of
@@ -791,10 +826,17 @@ checkTestSuite ts@(TestSuite
             TestSuiteExeV10 _ f -> takeExtension f `notElem` [".hs", ".lhs"]
             _ -> False
 
-checkBenchmark :: Monad m => Benchmark -> CheckM m ()
-checkBenchmark bm@(Benchmark
-                     benchmarkName_ benchmarkInterface_
-                     benchmarkBuildInfo_) = do
+checkBenchmark :: Monad m =>
+        [AssocDep] ->   -- “Inherited” dependencies for PVP checks.
+        Benchmark ->
+        CheckM m ()
+checkBenchmark ads bm@(Benchmark
+                        benchmarkName_ benchmarkInterface_
+                        benchmarkBuildInfo_) = do
+
+        -- Target type/name (benchmark).
+        let cet = CETBenchmark benchmarkName_
+
         -- § Interface & bm specific tests.
         case benchmarkInterface_ of
           BenchmarkUnsupported tt@(BenchmarkTypeUnknown _ _) ->
@@ -807,14 +849,14 @@ checkBenchmark bm@(Benchmark
 
         checkP (not $ all (flip elem (benchmarkModules bm))
                          (benchmarkModulesAutogen bm))
-          (PackageBuildImpossible $ AutogenNoOther CETBenchmark benchmarkName_)
+          (PackageBuildImpossible $ AutogenNoOther cet)
 
         checkP (not $ all (flip elem (view L.includes bm))
                          (view L.autogenIncludes bm))
           (PackageBuildImpossible AutogenIncludesNotIncludedExe)
 
         -- § BuildInfo checks.
-        checkBuildInfo BITTestBench [] benchmarkBuildInfo_
+        checkBuildInfo cet [] ads benchmarkBuildInfo_
     where
           -- Cannot abstract with similar function in checkTestSuite,
           -- they are different.
@@ -828,10 +870,6 @@ checkBenchmark bm@(Benchmark
 -- * Build info
 -- ------------------------------------------------------------
 
--- Target type (library, test/bech, other).
-data BITarget = BITLib | BITTestBench | BITOther
-    deriving (Eq, Show)
-
 -- Check a great deal of things in buildInfo.
 -- With 'checkBuildInfo' we cannot follow the usual “pattern match
 -- everything” method, for the number of BuildInfo fields (almost 50)
@@ -841,19 +879,21 @@ data BITarget = BITLib | BITTestBench | BITOther
 -- little gain (most likely if a field is added to BI, the relevant
 -- function will be tweaked in Distribution.Types.BuildInfo too).
 checkBuildInfo :: Monad m =>
-            BITarget ->      -- Target type.
-            [ModuleName] ->  -- Additional module names which cannot be
-                             -- extracted from BuildInfo (mainly: exposed
-                             -- library modules).
+            CEType ->         -- Name and type of the target.
+            [ModuleName] ->   -- Additional module names which cannot be
+                              -- extracted from BuildInfo (mainly: exposed
+                              -- library modules).
+            [AssocDep] ->     -- Inherited “internal” (main lib, named
+                              -- internal libs) dependencies.
             BuildInfo ->
             CheckM m ()
-checkBuildInfo t ams bi = do
+checkBuildInfo cet ams ads bi = do
 
         -- For the sake of clarity, we split che checks in various
         -- (top level) functions, even if we are not actually going
         -- deeper in the traversal.
 
-        checkBuildInfoOptions t bi
+        checkBuildInfoOptions (cet2bit cet) bi
         checkBuildInfoPathsContent bi
         checkBuildInfoPathsWellFormedness bi
 
@@ -863,11 +903,11 @@ checkBuildInfo t ams bi = do
         checkAutogenModules ams bi
 
         -- PVP: we check for base and all other deps.
-        (ids, rds) <- partitionDeps ["base"]
+        (ids, rds) <- partitionDeps ads [mkUnqualComponentName "base"]
                         (mergeDependencies $ targetBuildDepends bi)
         let ick = const (PackageDistInexcusable BaseNoUpperBounds)
-            rck = PackageDistSuspiciousWarn . MissingUpperBounds
-        mapM_ (checkPVP ick) ids
+            rck = PackageDistSuspiciousWarn . MissingUpperBounds cet
+        checkPVP ick ids
         checkPVPs rck rds
 
         -- Custom fields well-formedness (ASCII).
@@ -890,7 +930,7 @@ checkBuildInfoPathsContent :: Monad m => BuildInfo -> CheckM m ()
 checkBuildInfoPathsContent bi = do
         mapM_ checkLang (allLanguages bi)
         mapM_ checkExt (allExtensions bi)
-        mapM_ checkDep (targetBuildDepends bi) --xxx checdep no va qui
+        mapM_ checkDep (targetBuildDepends bi)
         df <- asksCM ccDesugar
           -- This way we can use the same function for legacy&non exedeps.
         let ds = buildToolDepends bi ++ catMaybes (map df $ buildTools bi)
@@ -1126,35 +1166,57 @@ checkLocalPathExist title dir =
 -- PVP --
 
 -- Convenience function to partition important dependencies by name. To
--- be used together with checkPVP.
+-- be used together with checkPVP. Important: usually “base” or “Cabal”,
+-- as the error is slightly different.
+-- Note that `partitionDeps` will also filter out dependencies which are
+-- already present in a inherithed fashion (e.g. an exe which imports the
+-- main library will not need to specify upper bounds on shared dependencies,
+-- hence we do not return those).
+--
 partitionDeps :: Monad m =>
-                 [String] ->  -- | List of package names ("base", "Cabal"…)
-                 [Dependency] ->
-                 CheckM m ([Dependency], [Dependency])
-partitionDeps ns ds = do
-        pId <- asksCM (pnPackageId . ccNames)
-        let idName = unPackageName . pkgName $ pId
-            -- Do not return dependencies which are package
-            -- main library.
-            ds' = filter ((/= idName) . depName) ds
+        [AssocDep] ->             -- Possibly inherited dependencies, i.e.
+                                  -- dependencies from internal/main libs.
+        [UnqualComponentName] ->  -- List of package names ("base", "Cabal"…)
+        [Dependency] ->           -- Dependencies to check.
+        CheckM m ([Dependency], [Dependency])
+partitionDeps ads ns ds = do
 
-        -- February 2022: this is a tricky part of the function. If the
-        -- two lists are different in length (hence, we did find a dep-
-        -- endency to the package itself), move all dependencies in the
-        -- non-critical bucket.
-        -- With this pragmatic choice we kill two birds with one stone:
-        -- - we still ouptut a warning for naked `base` dependencies in
-        --   the target (usually a test, an example exe, etc);
-        -- - but we don’t make Hackage refuse the package, which mimics
-        --   ante-refactoring behaviour (a soup of all dependencies in
-        --   the whole package merged together).
-        -- Once the community is positive about upper bounds best-prac-
-        -- tices this can be removed.
-        if ds /= ds'
-          then return ([], ds')
-          else return (partition (flip elem ns . depName) ds')
+        -- Shared dependencies from “intra .cabal” libraries.
+        let -- names of our dependencies
+            dqs = map unqualName ds
+            -- shared targets that match
+            fads = filter (flip elem dqs . fst) ads
+            -- the names of such targets
+            inNam = nub $ map fst fads :: [UnqualComponentName]
+            -- the dependencies of such targets
+            inDep = concatMap snd fads :: [Dependency]
+
+        -- We exclude from checks:
+        -- 1. dependencies which are shared with main library / a
+        --    sublibrary; and of course
+        -- 2. the names of main library / sub libraries themselves.
+        --
+        -- So in myPackage.cabal
+        -- library
+        --      build-depends: text < 5
+        -- ⁝
+        --      build-depends: myPackage,        ← no warning, internal
+        --                     text,             ← no warning, inherited
+        --                     monadacme         ← warning!
+        let fFun d = notElem (unqualName d) inNam &&
+                     notElem (unqualName d)
+                             (map unqualName inDep)
+            ds' = filter fFun ds
+
+        return $ partition (flip elem ns . unqualName) ds'
     where
-          depName d = unPackageName . depPkgName $ d
+          -- Return *sublibrary* name if exists (internal),
+          -- otherwise package name.
+          unqualName :: Dependency -> UnqualComponentName
+          unqualName (Dependency n _ nel) =
+              case head (toNonEmpty nel) of
+                (LSubLibName ln) -> ln
+                _ -> packageNameToUnqualComponentName n
 
 -- Sometimes we read (or end up with) “straddle” deps declarations
 -- like this:
@@ -1166,46 +1228,82 @@ partitionDeps ns ds = do
 mergeDependencies :: [Dependency] -> [Dependency]
 mergeDependencies [] = []
 mergeDependencies l@(d:_) =
-        let dName = unPackageName . depPkgName $ d
-            (sames, diffs) = partition ((== dName) . depName) l
+        let (sames, diffs) = partition ((== depName d) . depName) l
             merged = Dependency (depPkgName d)
                                 (foldl intersectVersionRanges anyVersion $
                                    map depVerRange sames)
                                 (depLibraries d)
         in merged : mergeDependencies diffs
     where
+          depName :: Dependency -> String
           depName wd = unPackageName . depPkgName $ wd
 
--- PVP dependency check (single dependency).
+-- PVP dependency check (one warning message per dependency, usually
+-- for important dependencies like base).
 checkPVP :: Monad m =>
             (String -> PackageCheck) -> -- Warn message dependend on name
                                         -- (e.g. "base", "Cabal").
-            Dependency ->
+            [Dependency] ->
             CheckM m ()
-checkPVP ckf (Dependency pname ver _) = do
-        checkP ((not . hasUpperBound) ver)
-          (ckf . unPackageName $ pname)
+checkPVP ckf ds = do
+            let ods = checkPVPPrim ds
+            mapM_ (tellP . ckf . unPackageName . depPkgName) ods
 
 -- PVP dependency check for a list of dependencies. Some code duplication
 -- is sadly needed to provide more ergonimic error messages.
 checkPVPs :: Monad m =>
-             ([String] -> PackageCheck) -> -- Grouped error message,
-                                           -- depends on a set of names.
-             [Dependency] ->
+             ([String] ->
+              PackageCheck) ->  -- Grouped error message, depends on a
+                                -- set of names.
+             [Dependency] ->    -- Deps to analyse.
              CheckM m ()
-checkPVPs cf ds = do
-            let ds' = filter withoutUpper ds
-                nds = map (unPackageName . depPkgName) ds'
-            unless (null nds)
-              (tellP $ cf nds)
-        where
-              withoutUpper :: Dependency -> Bool
-              withoutUpper (Dependency _ ver _) = not . hasUpperBound $ ver
+checkPVPs cf ds | null ns = return ()
+                | otherwise = tellP (cf ns)
+    where
+           ods = checkPVPPrim ds
+           ns = map (unPackageName . depPkgName) ods
 
+-- Returns dependencies without upper bounds.
+checkPVPPrim :: [Dependency] -> [Dependency]
+checkPVPPrim ds = filter withoutUpper ds
+    where
+          withoutUpper :: Dependency -> Bool
+          withoutUpper (Dependency _ ver _) = not . hasUpperBound $ ver
+
+-- A library name / dependencies association list. Ultimately to be
+-- fed to PVP check.
+type AssocDep = (UnqualComponentName, [Dependency])
+
+-- Gets a list of dependencies from a Library target to pass to PVP related
+-- functions. We are not doing checks here: this is not imprecise, as the
+-- library itself *will* be checked for PVP errors.
+-- Same for branch merging,
+-- each of those branch will be checked one by one.
+extractAssocDeps :: UnqualComponentName ->  -- Name of the target library
+                    CondTree ConfVar [Dependency] Library ->
+                    AssocDep
+extractAssocDeps n ct =
+            let a = ignoreConditions ct
+                    -- Merging is fine here, remember the specific
+                    -- library dependencies will be checked branch
+                    -- by branch.
+            in (n, snd a)
 
 -- ------------------------------------------------------------
 -- * Options
 -- ------------------------------------------------------------
+
+-- Target type for option checking.
+data BITarget = BITLib | BITTestBench | BITOther
+    deriving (Eq, Show)
+
+cet2bit :: CEType -> BITarget
+cet2bit (CETLibrary {}) = BITLib
+cet2bit (CETForeignLibrary {}) = BITLib
+cet2bit (CETExecutable {}) = BITOther
+cet2bit (CETTest {}) = BITTestBench
+cet2bit (CETBenchmark {}) = BITTestBench
+cet2bit CETSetup = BITOther
 
 -- General check on all options (ghc, C, C++, …) for common inaccuracies.
 checkBuildInfoOptions :: Monad m => BITarget -> BuildInfo -> CheckM m ()

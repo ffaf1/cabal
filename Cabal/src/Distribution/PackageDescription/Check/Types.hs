@@ -63,7 +63,7 @@ import Distribution.Types.LegacyExeDependency (LegacyExeDependency)
 import Distribution.Types.PackageId (PackageIdentifier)
 import Distribution.Types.PackageDescription (package, specVersion)
 import Distribution.Types.PackageName (PackageName)
-import Distribution.Types.LibraryName (LibraryName, showLibraryName)
+import Distribution.Types.LibraryName (LibraryName(..), showLibraryName)
 import Distribution.Types.TestType (TestType, knownTestTypes)
 import Distribution.Types.UnqualComponentName
 import Distribution.Types.Version (Version)
@@ -440,7 +440,7 @@ data CheckExplanation =
         | NoMainIs UnqualComponentName
         | NoHsLhsMain
         | MainCCabal1_18
-        | AutogenNoOther CEType UnqualComponentName
+        | AutogenNoOther CEType
         | AutogenIncludesNotIncludedExe
         | TestsuiteTypeNotKnown TestType
         | TestsuiteNotSupported TestType
@@ -534,7 +534,7 @@ data CheckExplanation =
         | UnknownArch [String]
         | UnknownCompiler [String]
         | BaseNoUpperBounds
-        | MissingUpperBounds [String]
+        | MissingUpperBounds CEType [String]
         | SuspiciousFlagName [String]
         | DeclaredUsedFlags (Set.Set FlagName) (Set.Set FlagName)
         | NonASCIICustomField [String]
@@ -580,16 +580,28 @@ extractCheckExplantion (PackageDistInexcusable e) = e
 
 -- | Which stanza does `CheckExplanation` refer to?
 --
-data CEType = CETLibrary | CETExecutable | CETTest | CETBenchmark
+data CEType =
+      CETLibrary LibraryName
+    | CETForeignLibrary UnqualComponentName
+    | CETExecutable UnqualComponentName
+    | CETTest UnqualComponentName
+    | CETBenchmark UnqualComponentName
+    | CETSetup
     deriving (Eq, Ord, Show)
 
 -- | Pretty printing `CEType`.
 --
-ppCE :: CEType -> String
-ppCE CETLibrary = "library"
-ppCE CETExecutable = "executable"
-ppCE CETTest = "test suite"
-ppCE CETBenchmark = "benchmark"
+ppCET :: CEType -> String
+ppCET cet = case cet of
+              CETLibrary ln -> showLibraryName ln
+              CETForeignLibrary n -> "foreign library" ++ qn n
+              CETExecutable n -> "executable" ++ qn n
+              CETTest n -> "test suite" ++ qn n
+              CETBenchmark n -> "benchmark" ++ qn n
+              CETSetup -> "custom-setup"
+     where
+           qn :: UnqualComponentName -> String
+           qn wn = (" "++) . quote . prettyShow $ wn
 
 -- | Which field does `CheckExplanation` refer to?
 --
@@ -661,8 +673,8 @@ ppExplanation MainCCabal1_18 =
     "The package uses a C/C++/obj-C source file for the 'main-is' field. "
       ++ "To use this feature you need to specify 'cabal-version: 1.18' or"
       ++ " higher."
-ppExplanation (AutogenNoOther ct ucn) =
-    "On " ++ ppCE ct ++ " '" ++ prettyShow ucn ++ "' an 'autogen-module'"
+ppExplanation (AutogenNoOther ct) =
+    "On " ++ ppCET ct ++ " an 'autogen-module'"
       ++ " is not on 'other-modules'"
 ppExplanation AutogenIncludesNotIncludedExe =
     "An include in 'autogen-includes' is not in 'includes'."
@@ -1044,14 +1056,12 @@ ppExplanation BaseNoUpperBounds =
       ++ "not sure what upper bound to use then use the next  major "
       ++ "version. For example if you have tested your package with 'base' "
       ++ "version 4.5 and 4.6 then use 'build-depends: base >= 4.5 && < 4.7'."
-ppExplanation (MissingUpperBounds names) =
-    let separator = "\n  - "
-    in
-    "These packages miss upper bounds:" ++ separator
-      ++ (List.intercalate separator names) ++ "\n"
-      ++  "Please add them, using `cabal gen-bounds` for suggestions."
-      ++ " For more information see: "
-      ++ " https://pvp.haskell.org/"
+ppExplanation (MissingUpperBounds ct names) =
+    let separator = "\n  - " in
+    "On " ++ ppCET ct ++ ", " ++
+    "these packages miss upper bounds:" ++ separator
+      ++ List.intercalate separator names ++ "\n"
+      ++ "Please add them. More informations at https://pvp.haskell.org/"
 ppExplanation (SuspiciousFlagName invalidFlagNames) =
     "Suspicious flag names: " ++ unwords invalidFlagNames ++ ". "
       ++ "To avoid ambiguity in command line interfaces, flag shouldn't "
