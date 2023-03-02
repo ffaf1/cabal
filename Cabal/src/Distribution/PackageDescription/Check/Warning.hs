@@ -113,8 +113,9 @@ isHackageDistError = \case
 
 -- | Explanations of 'PackageCheck`'s errors/warnings.
 --
--- If you add a constructor here, remeber to change the documentation
--- in @doc/cabal-commends.rst@!
+-- ☞ N.B: if you add a constructor here, remeber to change the documentation
+-- in @doc/cabal-commands.rst@! Same if you modify it, you need to adjust the
+-- documentation!
 data CheckExplanation =
           ParseWarning FilePath PWarning
         | NoNameField
