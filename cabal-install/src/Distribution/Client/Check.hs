@@ -108,5 +108,5 @@ check verbosity = do
 
   where
     printCheckMessages :: [PackageCheck] -> IO ()
-    printCheckMessages = traverse_ (warn verbosity) . map show
+    printCheckMessages = traverse_ (warn verbosity) . map ppPackageCheck
         -- xxx mapM_ o traverse?
